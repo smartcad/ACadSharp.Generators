@@ -1,0 +1,34 @@
+# Build results
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# User-specific files
+*.user
+.vs/
+.vscode/
+
+# Generated files
+*.g.cs
+DxfMetadataRegistry.g.cs
+
+# NuGet
+.nupkg
+*.nupkg
+*.snupkg
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local files
+appsettings.local.json
+.env
