@@ -302,18 +302,12 @@ namespace ACadSharp.Generators
 				// but there's no subclass marker — shouldn't normally happen)
 			}
 
-			// Add SubClasses to map in walk order (concrete first)
-			for (int i = 0; i < subclassNames.Count; i++)
+			// Add SubClasses in final order (base first), avoiding a generated LINQ reverse/copy.
+			for (int i = subclassNames.Count - 1; i >= 0; i--)
 			{
 				string scVar = SubclassVarName(i);
 				sb.AppendLine($"            map.SubClasses[\"{EscapeString(subclassNames[i])}\"] = {scVar};");
 			}
-
-			// Reverse the SubClasses (matching the runtime behavior)
-			sb.AppendLine("            map.SubClasses = new Dictionary<string, DxfClassMap>(");
-			sb.AppendLine("                System.Linq.Enumerable.ToDictionary(");
-			sb.AppendLine("                    System.Linq.Enumerable.Reverse(map.SubClasses),");
-			sb.AppendLine("                    kvp => kvp.Key, kvp => kvp.Value));");
 
 			// DimensionStyle special case
 			if (isDimensionStyle)
@@ -455,7 +449,17 @@ namespace ACadSharp.Generators
 			sb.AppendLine();
 			sb.AppendLine("        public static Dictionary<string, CadSystemVariable> GetHeaderMap()");
 			sb.AppendLine("        {");
-			sb.AppendLine("            if (_headerMap != null) return new Dictionary<string, CadSystemVariable>(_headerMap);");
+			sb.AppendLine("            return new Dictionary<string, CadSystemVariable>(getHeaderMap());");
+			sb.AppendLine("        }");
+			sb.AppendLine();
+			sb.AppendLine("        internal static IReadOnlyDictionary<string, CadSystemVariable> GetHeaderMapInternal()");
+			sb.AppendLine("        {");
+			sb.AppendLine("            return getHeaderMap();");
+			sb.AppendLine("        }");
+			sb.AppendLine();
+			sb.AppendLine("        private static Dictionary<string, CadSystemVariable> getHeaderMap()");
+			sb.AppendLine("        {");
+			sb.AppendLine("            if (_headerMap != null) return _headerMap;");
 			sb.AppendLine("            var map = new Dictionary<string, CadSystemVariable>();");
 
 			string headerFqn = headerType.ToDisplayString();
@@ -549,7 +553,7 @@ namespace ACadSharp.Generators
 			}
 
 			sb.AppendLine("            _headerMap = map;");
-			sb.AppendLine("            return new Dictionary<string, CadSystemVariable>(map);");
+			sb.AppendLine("            return _headerMap;");
 			sb.AppendLine("        }");
 			sb.AppendLine();
 		}
