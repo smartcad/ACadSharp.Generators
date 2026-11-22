@@ -25,7 +25,9 @@ namespace ACadSharp.Generators
 		{
 			var candidateTypes = context.SyntaxProvider.CreateSyntaxProvider(
 				predicate: static (node, _) => node is ClassDeclarationSyntax c &&
-					(c.AttributeLists.Count > 0 || c.Identifier.Text == "CadHeader"),
+					(c.AttributeLists.Count > 0 || c.Identifier.Text == "CadHeader"
+						// Classes read through DxfClassMap without a class attribute (CadValue, TableEntity.Cell)
+						|| c.Members.OfType<PropertyDeclarationSyntax>().Any(p => p.AttributeLists.Count > 0)),
 				transform: static (ctx, ct) => GetCandidateTypeNameOrNull(ctx, ct))
 				.Where(static name => name is not null);
 
@@ -52,14 +54,30 @@ namespace ACadSharp.Generators
 			if (GetMetadataName(symbol) == CadHeaderFqn)
 				return CadHeaderFqn;
 
+			// A class whose own properties carry DXF codes: DxfClassMap.Create maps it (with a name given
+			// by the caller when the class has no DxfSubClass marker).
+			foreach (var property in symbol.GetMembers().OfType<IPropertySymbol>())
+			{
+				foreach (var attr in property.GetAttributes())
+				{
+					string fqn = attr.AttributeClass?.ToDisplayString();
+					if (fqn == DxfCodeValueAttributeFqn || fqn == DxfCollectionCodeValueAttributeFqn)
+						return GetMetadataName(symbol);
+				}
+			}
+
 			return null;
 		}
 
 		private static string GetMetadataName(INamedTypeSymbol symbol)
 		{
+			// Nested types are Outer+Inner in metadata (TableEntity+Cell).
+			string name = symbol.MetadataName;
+			for (var containing = symbol.ContainingType; containing != null; containing = containing.ContainingType)
+				name = containing.MetadataName + "+" + name;
 			if (symbol.ContainingNamespace.IsGlobalNamespace)
-				return symbol.Name;
-			return symbol.ContainingNamespace.ToDisplayString() + "." + symbol.Name;
+				return name;
+			return symbol.ContainingNamespace.ToDisplayString() + "." + name;
 		}
 
 		private static void Execute(SourceProductionContext spc, ImmutableArray<string> candidateNames, Compilation compilation)
@@ -79,10 +97,12 @@ namespace ACadSharp.Generators
 
 			if (cadObjectSymbol == null || dxfNameAttrSymbol == null) return;
 
+			var candidateSymbols = new List<INamedTypeSymbol>();
 			foreach (var name in distinctNames)
 			{
 				var symbol = compilation.GetTypeByMetadataName(name);
 				if (symbol == null) continue;
+				candidateSymbols.Add(symbol);
 
 				if (name == CadHeaderFqn)
 				{
@@ -107,6 +127,18 @@ namespace ACadSharp.Generators
 						subclassTypes.Add(type);
 					}
 				}
+			}
+
+			// DxfClassMap.Create also maps classes without DxfName: a DxfSubClass marker of their own, or
+			// DXF codes on their properties (CadValue, TableEntity.Cell, read with a caller-given name).
+			var classMapTypes = new List<INamedTypeSymbol>(subclassTypes);
+			foreach (var type in candidateSymbols)
+			{
+				if (type.IsGenericType || type.IsStatic || classMapTypes.Contains(type, SymbolEqualityComparer.Default))
+					continue;
+				var subclassAttr = dxfSubClassAttrSymbol != null ? GetAttribute(type, dxfSubClassAttrSymbol) : null;
+				if (subclassAttr != null || GetDxfProperties(type, dxfCodeValueAttrSymbol, dxfCollectionCodeValueAttrSymbol).Count > 0)
+					classMapTypes.Add(type);
 			}
 
 			var sb = new StringBuilder(64 * 1024);
@@ -150,13 +182,26 @@ namespace ACadSharp.Generators
 			// Class map builders (for DxfClassMap.Create<T> replacement)
 			sb.AppendLine("        private static readonly Dictionary<Type, Func<DxfClassMap>> _classMapBuilders = new Dictionary<Type, Func<DxfClassMap>>");
 			sb.AppendLine("        {");
-			foreach (var type in subclassTypes)
+			foreach (var type in classMapTypes)
 			{
 				string fqn2 = type.ToDisplayString();
 				string safeName2 = fqn2.Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "_");
 				sb.AppendLine($"            {{ typeof({fqn2}), BuildClassMap_{safeName2} }},");
 			}
 			sb.AppendLine("        };");
+			sb.AppendLine();
+			// Types with a DxfSubClass attribute (whatever its marker): DxfClassMap.Create needs a name
+			// from the caller for any other type, as the reflection mapping did.
+			sb.AppendLine("        private static readonly HashSet<Type> _subClassAttributeTypes = new HashSet<Type>");
+			sb.AppendLine("        {");
+			foreach (var type in classMapTypes)
+			{
+				if (dxfSubClassAttrSymbol != null && GetAttribute(type, dxfSubClassAttrSymbol) != null)
+					sb.AppendLine($"            typeof({type.ToDisplayString()}),");
+			}
+			sb.AppendLine("        };");
+			sb.AppendLine();
+			sb.AppendLine("        public static bool HasSubClassAttribute(Type type) => _subClassAttributeTypes.Contains(type);");
 			sb.AppendLine();
 			sb.AppendLine("        public static bool TryGetClassMap(Type type, out DxfClassMap classMap)");
 			sb.AppendLine("        {");
@@ -179,7 +224,7 @@ namespace ACadSharp.Generators
 			}
 
 			// Generate per-type class map builders (mirrors DxfClassMap.Create<T> logic)
-			foreach (var type in subclassTypes)
+			foreach (var type in classMapTypes)
 			{
 				GenerateClassMapBuilder(sb, type, dxfSubClassAttrSymbol,
 					dxfCodeValueAttrSymbol, dxfCollectionCodeValueAttrSymbol, cadObjectSymbol);
@@ -399,7 +444,10 @@ namespace ACadSharp.Generators
 			sb.AppendLine($"        private static DxfClassMap BuildClassMap_{safeName}()");
 			sb.AppendLine("        {");
 			sb.AppendLine("            var map = new DxfClassMap();");
-			sb.AppendLine($"            map.Name = \"{EscapeString(marker)}\";");
+			// The marker as DxfSubClassAttribute.ClassName gives it: null for [DxfSubClass(null, ...)].
+			sb.AppendLine(marker == null
+				? "            map.Name = null;"
+				: $"            map.Name = \"{EscapeString(marker)}\";");
 
 			// Add properties from the concrete type
 			var level = new HierarchyLevel
