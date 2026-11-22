@@ -1,10 +1,12 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="EnableHotReload">
 
 	<PropertyGroup>
 		<TargetFramework>netstandard2.0</TargetFramework>
 		<LangVersion>11.0</LangVersion>
 		<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
 		<IsRoslynComponent>true</IsRoslynComponent>
+		<!-- VS Code can propagate app Hot Reload to this netstandard analyzer project. -->
+		<EnableHotReload>false</EnableHotReload>
 	</PropertyGroup>
 
 	<ItemGroup>
